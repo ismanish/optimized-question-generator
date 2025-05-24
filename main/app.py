@@ -20,9 +20,6 @@ from src import settings
 
 # Import question generation functions - OPTIMIZED VERSION
 from src.utils.helpers import get_difficulty_description
-from src.utils.utils_mcq import generate_mcqs
-from src.utils.utils_fib import generate_fill_in_blank
-from src.utils.utils_tf import generate_true_false
 
 # Import the NEW shared summary helper
 from src.utils.summary_helper import generate_content_summary_sync
@@ -127,6 +124,11 @@ async def generate_single_question_type(question_type: str, configs: list, conte
     This function runs in the async event loop.
     """
     try:
+        # Import functions inside the async function to avoid import issues
+        from src.utils.utils_mcq import generate_mcqs
+        from src.utils.utils_fib import generate_fill_in_blank  
+        from src.utils.utils_tf import generate_true_false
+        
         # Aggregate counts for this question type
         total_for_type = sum([config['count'] for config in configs])
         
@@ -134,6 +136,7 @@ async def generate_single_question_type(question_type: str, configs: list, conte
         
         # Generate questions based on type using the OPTIMIZED functions with shared summary
         if question_type == "mcq":
+            # Use **kwargs to ensure all parameters are passed correctly
             question_text = generate_mcqs(
                 tenant_id=tenant_id,
                 filter_key=filter_key,
@@ -141,7 +144,7 @@ async def generate_single_question_type(question_type: str, configs: list, conte
                 num_questions=total_for_type,
                 difficulty_distribution=difficulty_distribution,
                 blooms_taxonomy_distribution=blooms_distribution,
-                content_summary=content_summary  # NEW: Pass shared summary
+                content_summary=content_summary
             )
         elif question_type == "fib":
             question_text = generate_fill_in_blank(
@@ -151,7 +154,7 @@ async def generate_single_question_type(question_type: str, configs: list, conte
                 num_questions=total_for_type,
                 difficulty_distribution=difficulty_distribution,
                 blooms_taxonomy_distribution=blooms_distribution,
-                content_summary=content_summary  # NEW: Pass shared summary
+                content_summary=content_summary
             )
         elif question_type == "tf":
             question_text = generate_true_false(
@@ -161,7 +164,7 @@ async def generate_single_question_type(question_type: str, configs: list, conte
                 num_questions=total_for_type,
                 difficulty_distribution=difficulty_distribution,
                 blooms_taxonomy_distribution=blooms_distribution,
-                content_summary=content_summary  # NEW: Pass shared summary
+                content_summary=content_summary
             )
         
         # Generate filename exactly as the utility functions do
@@ -183,7 +186,10 @@ async def generate_single_question_type(question_type: str, configs: list, conte
         return question_type, file_name, question_data, None
         
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
         print(f"Error generating {question_type} questions: {str(e)}")
+        print(f"Full error details: {error_details}")
         return question_type, None, None, str(e)
 
 @app.get("/")
@@ -320,7 +326,10 @@ async def generate_questions(sourceId: str, request: QuestionRequest):
         )
         
     except Exception as e:
+        import traceback
         error_message = str(e)
+        error_details = traceback.format_exc()
+        print(f"Full error details: {error_details}")
         status = "error"
         response = QuestionResponse(
             status=status,
