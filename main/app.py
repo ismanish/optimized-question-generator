@@ -6,6 +6,7 @@ import datetime
 import boto3
 import math
 import asyncio
+import concurrent.futures
 from typing import Optional, Dict
 from fastapi import FastAPI, Query, HTTPException, Depends
 from pydantic import BaseModel, Field
@@ -115,16 +116,16 @@ def calculate_question_distribution(total_questions: int, question_type_dist: Di
     
     return distribution
 
-async def generate_single_question_type(question_type: str, configs: list, content_summary: str, 
-                                       tenant_id: str, filter_key: str, filter_value: str,
-                                       difficulty_distribution: Dict[str, float], 
-                                       blooms_distribution: Dict[str, float]) -> tuple:
+def generate_single_question_type_sync(question_type: str, configs: list, content_summary: str, 
+                                      tenant_id: str, filter_key: str, filter_value: str,
+                                      difficulty_distribution: Dict[str, float], 
+                                      blooms_distribution: Dict[str, float]) -> tuple:
     """
-    Async wrapper for generating a single question type using shared summary.
-    This function runs in the async event loop.
+    Synchronous function for generating a single question type using shared summary.
+    This function will be run in parallel using ThreadPoolExecutor.
     """
     try:
-        # Import functions inside the async function to avoid import issues
+        # Import functions inside the function to avoid import issues
         from src.utils.utils_mcq import generate_mcqs
         from src.utils.utils_fib import generate_fill_in_blank  
         from src.utils.utils_tf import generate_true_false
@@ -132,11 +133,10 @@ async def generate_single_question_type(question_type: str, configs: list, conte
         # Aggregate counts for this question type
         total_for_type = sum([config['count'] for config in configs])
         
-        print(f"Generating {question_type} questions (count: {total_for_type})...")
+        print(f"[THREAD] Generating {question_type} questions (count: {total_for_type})...")
         
         # Generate questions based on type using the OPTIMIZED functions with shared summary
         if question_type == "mcq":
-            # Use **kwargs to ensure all parameters are passed correctly
             question_text = generate_mcqs(
                 tenant_id=tenant_id,
                 filter_key=filter_key,
@@ -182,19 +182,19 @@ async def generate_single_question_type(question_type: str, configs: list, conte
         with open(file_name, 'r') as json_file:
             question_data = json.load(json_file)
         
-        print(f"Completed generating {question_type} questions")
+        print(f"[THREAD] Completed generating {question_type} questions")
         return question_type, file_name, question_data, None
         
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
-        print(f"Error generating {question_type} questions: {str(e)}")
-        print(f"Full error details: {error_details}")
+        print(f"[THREAD] Error generating {question_type} questions: {str(e)}")
+        print(f"[THREAD] Full error details: {error_details}")
         return question_type, None, None, str(e)
 
 @app.get("/")
 def read_root():
-    return {"message": "Question Generation API v2.0 - OPTIMIZED. Use /questionBankService/source/{sourceId}/questions/generate endpoint to create questions with async processing and shared summary generation."}
+    return {"message": "Question Generation API v2.0 - OPTIMIZED. Use /questionBankService/source/{sourceId}/questions/generate endpoint to create questions with TRUE parallel processing and shared summary generation."}
 
 @app.post("/questionBankService/source/{sourceId}/questions/generate", response_model=QuestionResponse)
 async def generate_questions(sourceId: str, request: QuestionRequest):
@@ -203,7 +203,7 @@ async def generate_questions(sourceId: str, request: QuestionRequest):
     
     Key Optimizations:
     1. Summary generated only ONCE and shared across all question types
-    2. Question generators run in PARALLEL using async/await
+    2. Question generators run in TRUE PARALLEL using ThreadPoolExecutor
     3. Significantly improved performance
     
     - **sourceId**: Source identifier (e.g., 'dev_app')
@@ -259,49 +259,57 @@ async def generate_questions(sourceId: str, request: QuestionRequest):
                 type_groups[q_type] = []
             type_groups[q_type].append(config)
         
-        # OPTIMIZATION 2: Run question generators in PARALLEL using async
-        print("🚀 OPTIMIZATION: Running question generators in parallel...")
+        # OPTIMIZATION 2: Run question generators in TRUE PARALLEL using ThreadPoolExecutor
+        print("🚀 OPTIMIZATION: Running question generators in TRUE PARALLEL using threads...")
         parallel_start_time = datetime.datetime.utcnow()
         
-        # Create async tasks for each question type
-        tasks = []
-        for question_type, configs in type_groups.items():
-            # Create combined distributions for this question type
-            total_for_type = sum([config['count'] for config in configs])
-            difficulty_dist_for_type = {}
-            blooms_dist_for_type = {}
-            
-            for config in configs:
-                diff = config['difficulty']
-                blooms = config['blooms_level']
-                count = config['count']
-                
-                if diff not in difficulty_dist_for_type:
-                    difficulty_dist_for_type[diff] = 0
-                if blooms not in blooms_dist_for_type:
-                    blooms_dist_for_type[blooms] = 0
-                    
-                difficulty_dist_for_type[diff] += count / total_for_type
-                blooms_dist_for_type[blooms] += count / total_for_type
-            
-            # Create async task for this question type
-            task = generate_single_question_type(
-                question_type=question_type,
-                configs=configs,
-                content_summary=content_summary,  # Pass shared summary
-                tenant_id=request.tenant_id,
-                filter_key=request.filter_key,
-                filter_value=request.filter_value,
-                difficulty_distribution=difficulty_dist_for_type,
-                blooms_distribution=blooms_dist_for_type
-            )
-            tasks.append(task)
+        # Create thread pool and submit tasks
+        loop = asyncio.get_event_loop()
         
-        # Run all question generation tasks in parallel
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            # Create futures for each question type
+            futures = []
+            
+            for question_type, configs in type_groups.items():
+                # Create combined distributions for this question type
+                total_for_type = sum([config['count'] for config in configs])
+                difficulty_dist_for_type = {}
+                blooms_dist_for_type = {}
+                
+                for config in configs:
+                    diff = config['difficulty']
+                    blooms = config['blooms_level']
+                    count = config['count']
+                    
+                    if diff not in difficulty_dist_for_type:
+                        difficulty_dist_for_type[diff] = 0
+                    if blooms not in blooms_dist_for_type:
+                        blooms_dist_for_type[blooms] = 0
+                        
+                    difficulty_dist_for_type[diff] += count / total_for_type
+                    blooms_dist_for_type[blooms] += count / total_for_type
+                
+                # Submit task to thread pool
+                future = loop.run_in_executor(
+                    executor,
+                    generate_single_question_type_sync,
+                    question_type,
+                    configs,
+                    content_summary,  # Pass shared summary
+                    request.tenant_id,
+                    request.filter_key,
+                    request.filter_value,
+                    difficulty_dist_for_type,
+                    blooms_dist_for_type
+                )
+                futures.append(future)
+            
+            # Wait for all futures to complete - THIS IS TRUE PARALLEL EXECUTION
+            print(f"⚡ Running {len(futures)} question generators in parallel threads...")
+            results = await asyncio.gather(*futures, return_exceptions=True)
         
         parallel_time = (datetime.datetime.utcnow() - parallel_start_time).total_seconds()
-        print(f"✅ Parallel question generation completed in {parallel_time:.2f} seconds")
+        print(f"✅ TRUE parallel question generation completed in {parallel_time:.2f} seconds")
         
         # Process results
         for result in results:
@@ -320,7 +328,7 @@ async def generate_questions(sourceId: str, request: QuestionRequest):
         
         response = QuestionResponse(
             status=status,
-            message=f"✅ OPTIMIZED: Generated {request.total_questions} questions across {len(type_groups)} question types for sourceId: {sourceId} in {total_time:.2f} seconds (Summary: {summary_time:.2f}s, Parallel Generation: {parallel_time:.2f}s)",
+            message=f"✅ OPTIMIZED: Generated {request.total_questions} questions across {len(type_groups)} question types for sourceId: {sourceId} in {total_time:.2f} seconds (Summary: {summary_time:.2f}s, TRUE Parallel Generation: {parallel_time:.2f}s)",
             files_generated=files_generated,
             data=all_question_data
         )
@@ -375,7 +383,7 @@ async def generate_questions(sourceId: str, request: QuestionRequest):
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy", "version": "2.0.0 - OPTIMIZED", "optimizations": ["shared_summary_generation", "async_parallel_processing"]}
+    return {"status": "healthy", "version": "2.0.0 - OPTIMIZED", "optimizations": ["shared_summary_generation", "true_parallel_processing_with_threads"]}
 
 # Run the FastAPI app with uvicorn if executed directly
 if __name__ == "__main__":
